@@ -1,0 +1,762 @@
+/**
+ * Editor XML — importa um XML de NF-e, identifica peças que formam um
+ * conjunto (kit) e permite ao usuário confirmar, montar novos conjuntos
+ * manualmente, ou ignorar as sugestões antes de finalizar.
+ *
+ * Portado de FrankLoubak/Frente-de-Loja (src/App.tsx, aba "Importar XML").
+ * Esta versão é client-side: não depende de backend/banco de dados — o
+ * resultado final é exportado como JSON.
+ */
+
+import React, { useState, useCallback, useEffect } from 'react';
+import { XMLParser } from 'fast-xml-parser';
+import {
+  Upload, AlertCircle, ChevronRight, Package,
+  Building2, ReceiptText, GitMerge, CheckSquare, Square,
+  X, RotateCcw, Download, CheckCircle2,
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { cn, formatCurrency } from './lib/utils';
+import { NFeData, NFeItem } from './types';
+
+function Card({ icon, label, value, subValue }: { icon: React.ReactNode; label: string; value: string; subValue: string }) {
+  return (
+    <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm flex items-start gap-4">
+      <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl flex-shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <div className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{label}</div>
+        <div className="text-lg font-bold text-zinc-900 truncate">{value}</div>
+        <div className="text-xs text-zinc-500 truncate">{subValue}</div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [nfeData, setNfeData] = useState<NFeData | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [markupInput, setMarkupInput] = useState<string>("0");
+  const [confirmed, setConfirmed] = useState(false);
+
+  const [suggestedMerges, setSuggestedMerges] = useState<{
+    item1: NFeItem;
+    item2: NFeItem;
+    suggestedName: string;
+  }[]>([]);
+  const [selectedSuggestedMerges, setSelectedSuggestedMerges] = useState<number[]>([]);
+  const [mergeState, setMergeState] = useState<{
+    isOpen: boolean;
+    firstItem: NFeItem | null;
+    secondItem: NFeItem | null;
+    newName: string;
+  }>({
+    isOpen: false,
+    firstItem: null,
+    secondItem: null,
+    newName: "",
+  });
+
+  const openMerge = (item: NFeItem) => {
+    setMergeState({ isOpen: true, firstItem: item, secondItem: null, newName: "" });
+  };
+
+  const getCommonSuffix = (str1: string, str2: string) => {
+    const parts1 = str1.split(' ');
+    const parts2 = str2.split(' ');
+    const suffix: string[] = [];
+    let i = parts1.length - 1;
+    let j = parts2.length - 1;
+    while (i >= 0 && j >= 0 && parts1[i] === parts2[j]) {
+      suffix.unshift(parts1[i]);
+      i--;
+      j--;
+    }
+    return suffix.join(' ');
+  };
+
+  const suggestMergeName = (str1: string, str2: string) => {
+    const suffix = getCommonSuffix(str1, str2);
+    if (suffix.length > 3) {
+      return `CONJUNTO ${suffix}`;
+    }
+    return "";
+  };
+
+  // Varre os itens ainda "livres" (não integrados a nenhum conjunto) em busca
+  // de pares com sufixo de nome em comum, sugerindo a junção automaticamente.
+  useEffect(() => {
+    if (!nfeData) {
+      setSuggestedMerges([]);
+      setSelectedSuggestedMerges([]);
+      return;
+    }
+
+    const suggestions: { item1: NFeItem; item2: NFeItem; suggestedName: string }[] = [];
+    const processed = new Set<number>();
+    const availableItems = nfeData.itens.filter(i => !i.conjunto?.includes('Integrado') && !i.conjunto?.includes('Composto'));
+
+    for (let i = 0; i < availableItems.length; i++) {
+      if (processed.has(availableItems[i].item)) continue;
+      for (let j = i + 1; j < availableItems.length; j++) {
+        if (processed.has(availableItems[j].item)) continue;
+
+        const suggestedName = suggestMergeName(availableItems[i].descricao, availableItems[j].descricao);
+        if (suggestedName) {
+          suggestions.push({ item1: availableItems[i], item2: availableItems[j], suggestedName });
+          processed.add(availableItems[i].item);
+          processed.add(availableItems[j].item);
+          break;
+        }
+      }
+    }
+
+    setSuggestedMerges(suggestions);
+    setSelectedSuggestedMerges(suggestions.map((_, idx) => idx));
+  }, [nfeData]);
+
+  const calculateMarkupPrice = (cost: number) => {
+    const markup = parseFloat(markupInput) || 0;
+    return cost * (1 + markup / 100);
+  };
+
+  const confirmBulkMerge = () => {
+    if (!nfeData || selectedSuggestedMerges.length === 0) return;
+
+    let currentItens = [...nfeData.itens];
+    let nextItemNumber = Math.max(...currentItens.map(i => i.item)) + 1;
+
+    selectedSuggestedMerges.forEach(idx => {
+      const merge = suggestedMerges[idx];
+      const { item1, item2, suggestedName } = merge;
+      const totalCost = item1.valorUnitario + item2.valorUnitario;
+
+      const newItem: NFeItem = {
+        item: nextItemNumber++,
+        codigo: `CJ-${item1.codigo}-${item2.codigo}`,
+        descricao: suggestedName.toUpperCase(),
+        ncm: item1.ncm,
+        cfop: item1.cfop,
+        unidade: "UN",
+        quantidade: 1,
+        valorUnitario: totalCost,
+        valorTotal: totalCost,
+        codigo_barras: `CJ${Date.now()}${nextItemNumber}`,
+        conjunto: `Composto por: ${item1.codigo} e ${item2.codigo}`,
+      };
+
+      currentItens = currentItens.map(i => {
+        if (i.item === item1.item) return { ...i, conjunto: `Integrado no conjunto: ${newItem.codigo}` };
+        if (i.item === item2.item) return { ...i, conjunto: `Integrado no conjunto: ${newItem.codigo}` };
+        return i;
+      });
+
+      currentItens.push(newItem);
+    });
+
+    setNfeData({ ...nfeData, itens: currentItens });
+    setSuggestedMerges([]);
+  };
+
+  const confirmMerge = () => {
+    if (!nfeData || !mergeState.firstItem || !mergeState.secondItem || !mergeState.newName) return;
+
+    const first = mergeState.firstItem;
+    const second = mergeState.secondItem;
+    const totalCost = first.valorUnitario + second.valorUnitario;
+    const conjuntoCodigo = `CJ-${first.codigo}-${second.codigo}`;
+
+    const newItem: NFeItem = {
+      item: Math.max(...nfeData.itens.map(i => i.item)) + 1,
+      codigo: conjuntoCodigo,
+      descricao: mergeState.newName.toUpperCase(),
+      ncm: first.ncm,
+      cfop: first.cfop,
+      unidade: "UN",
+      quantidade: 1,
+      valorUnitario: totalCost,
+      valorTotal: totalCost,
+      codigo_barras: `CJ${Date.now()}`,
+      conjunto: `Composto por: ${first.codigo} e ${second.codigo}`,
+    };
+
+    // Marca os originais como parte do conjunto
+    const updatedItens = nfeData.itens.map(i => {
+      if (i.item === first.item) return { ...i, conjunto: `Integrado no conjunto: ${newItem.codigo}` };
+      if (i.item === second.item) return { ...i, conjunto: `Integrado no conjunto: ${newItem.codigo}` };
+      return i;
+    });
+
+    setNfeData({ ...nfeData, itens: [...updatedItens, newItem] });
+    setMergeState({ isOpen: false, firstItem: null, secondItem: null, newName: "" });
+  };
+
+  const parseXML = (xmlText: string) => {
+    try {
+      const parser = new XMLParser({
+        ignoreAttributes: false,
+        attributeNamePrefix: "@_",
+      });
+      const result = parser.parse(xmlText);
+
+      const nfe = result.nfeProc?.NFe || result.NFe;
+      if (!nfe) throw new Error("Estrutura de NF-e não encontrada no XML.");
+
+      const infNFe = nfe.infNFe;
+      const ide = infNFe.ide;
+      const emit = infNFe.emit;
+      const dest = infNFe.dest;
+      const det = Array.isArray(infNFe.det) ? infNFe.det : [infNFe.det];
+      const total = infNFe.total.ICMSTot;
+
+      const mappedData: NFeData = {
+        id: infNFe["@_Id"] || "",
+        numero: ide.nNF,
+        serie: ide.serie,
+        dataEmissao: ide.dhEmi,
+        naturezaOperacao: ide.natOp,
+        emitente: {
+          cnpj: String(emit.CNPJ).replace(/\D/g, ''),
+          nome: emit.xNome,
+          fantasia: emit.xFant,
+        },
+        destinatario: {
+          cnpj: String(dest.CNPJ || dest.CPF).replace(/\D/g, ''),
+          nome: dest.xNome,
+          email: dest.email,
+        },
+        itens: det.map((d: any) => {
+          const cEAN = d.prod.cEAN;
+          const hasValidEAN = cEAN && cEAN !== "SEM GTIN" && cEAN.length >= 8;
+          // Se não tiver EAN válido, gera um código interno: 789 (Brasil) + Código Produto + Nº da nota
+          const generatedBarcode = hasValidEAN ? cEAN : `INT${d.prod.cProd}${ide.nNF}`;
+
+          return {
+            item: parseInt(d["@_nItem"]),
+            codigo: d.prod.cProd,
+            descricao: d.prod.xProd,
+            ncm: d.prod.NCM,
+            cfop: d.prod.CFOP,
+            unidade: d.prod.uCom,
+            quantidade: parseFloat(d.prod.qCom),
+            valorUnitario: parseFloat(d.prod.vUnCom),
+            valorTotal: parseFloat(d.prod.vProd),
+            codigo_barras: generatedBarcode,
+          };
+        }),
+        total: {
+          valorProdutos: parseFloat(total.vProd),
+          valorNota: parseFloat(total.vNF),
+        },
+      };
+
+      setNfeData(mappedData);
+      setError(null);
+      setConfirmed(false);
+    } catch (err) {
+      console.error(err);
+      setError("Erro ao processar o arquivo XML. Verifique se é um arquivo de NF-e válido.");
+      setNfeData(null);
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result as string;
+        parseXML(text);
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  }, []);
+
+  const onDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && (file.type === "text/xml" || file.name.endsWith(".xml"))) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result as string;
+        parseXML(text);
+      };
+      reader.readAsText(file);
+    } else {
+      setError("Por favor, envie um arquivo XML válido.");
+    }
+  }, []);
+
+  const reset = () => {
+    setNfeData(null);
+    setError(null);
+    setConfirmed(false);
+    setMarkupInput("0");
+  };
+
+  const exportJSON = () => {
+    if (!nfeData) return;
+    const blob = new Blob([JSON.stringify(nfeData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nfe-${nfeData.numero}-conjuntos.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-emerald-100 flex flex-col">
+      <header className="bg-white border-b border-zinc-200 px-6 py-4 sticky top-0 z-20">
+        <div className="max-w-[1600px] mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <div className="bg-emerald-600 p-2 rounded-lg shadow-sm">
+              <ReceiptText className="text-white w-6 h-6" />
+            </div>
+            <div>
+              <h1 className="text-xl font-semibold tracking-tight">Editor XML</h1>
+              <p className="text-xs text-zinc-400">Importação de NF-e e montagem de conjuntos</p>
+            </div>
+          </div>
+          {nfeData && (
+            <button
+              onClick={reset}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 transition-all"
+            >
+              <RotateCcw className="w-4 h-4" />
+              Nova Importação
+            </button>
+          )}
+        </div>
+      </header>
+
+      <main className="flex-1 max-w-[1600px] w-full mx-auto px-6 py-8">
+        <AnimatePresence mode="wait">
+          {!nfeData ? (
+            <motion.div
+              key="uploader"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="mt-12"
+            >
+              <div
+                onDragOver={onDragOver}
+                onDragLeave={onDragLeave}
+                onDrop={onDrop}
+                className={cn(
+                  "relative group cursor-pointer border-2 border-dashed rounded-3xl p-12 transition-all duration-300 flex flex-col items-center justify-center text-center",
+                  isDragging
+                    ? "border-emerald-500 bg-emerald-50/50"
+                    : "border-zinc-300 hover:border-emerald-400 hover:bg-white"
+                )}
+              >
+                <input
+                  type="file"
+                  accept=".xml"
+                  onChange={handleFileUpload}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+
+                <div className={cn(
+                  "w-20 h-20 rounded-2xl flex items-center justify-center mb-6 transition-transform duration-300 group-hover:scale-110",
+                  isDragging ? "bg-emerald-500 text-white" : "bg-emerald-100 text-emerald-600"
+                )}>
+                  <Upload className="w-10 h-10" />
+                </div>
+
+                <h2 className="text-2xl font-semibold mb-2">Importar XML de NF-e</h2>
+                <p className="text-zinc-500 max-w-sm mb-8">
+                  Arraste seu arquivo XML aqui ou clique para selecionar do seu computador.
+                </p>
+
+                <div className="flex gap-4">
+                  <div className="flex items-center gap-2 text-xs font-medium text-zinc-400 uppercase tracking-widest">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                    Processado no navegador
+                  </div>
+                </div>
+              </div>
+
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-6 p-4 bg-red-50 border border-red-100 rounded-xl flex items-center gap-3 text-red-600"
+                >
+                  <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                  <p className="text-sm font-medium">{error}</p>
+                </motion.div>
+              )}
+            </motion.div>
+          ) : (
+            <motion.div key="data" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+              {/* Summary Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <Card
+                  icon={<ReceiptText className="w-5 h-5" />}
+                  label="Número da Nota"
+                  value={nfeData.numero}
+                  subValue={`Série ${nfeData.serie}`}
+                />
+                <Card
+                  icon={<Building2 className="w-5 h-5" />}
+                  label="Emitente"
+                  value={nfeData.emitente.fantasia || nfeData.emitente.nome}
+                  subValue={nfeData.emitente.cnpj}
+                />
+                <Card
+                  icon={<Package className="w-5 h-5" />}
+                  label="Itens"
+                  value={String(nfeData.itens.length)}
+                  subValue={formatCurrency(nfeData.total.valorNota)}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
+                <div className="space-y-6">
+                  <section className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden">
+                    <div className="px-6 py-4 border-b border-zinc-100 flex items-center justify-between">
+                      <h3 className="font-semibold text-zinc-900">Itens da Nota</h3>
+                      <p className="text-xs text-zinc-400">Clique em <GitMerge className="w-3 h-3 inline mx-0.5" /> para unir dois itens em um conjunto</p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-zinc-50 text-left text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
+                          <tr>
+                            <th className="px-6 py-3">Cód / Descrição</th>
+                            <th className="px-6 py-3 text-right">Qtd</th>
+                            <th className="px-6 py-3 text-right">Custo Unit.</th>
+                            <th className="px-6 py-3 text-right bg-emerald-50/30">Venda Sugerida</th>
+                            <th className="px-6 py-3 text-center">Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-zinc-50">
+                          {nfeData.itens.map((item) => (
+                            <tr key={item.item} className="hover:bg-zinc-50/50 transition-colors group">
+                              <td className="px-6 py-4">
+                                <div className="text-sm font-medium text-zinc-900">{item.descricao}</div>
+                                <div className="text-xs text-zinc-400 font-mono mt-0.5">{item.codigo}</div>
+                                {item.conjunto && (
+                                  <div className={cn(
+                                    "text-[10px] font-semibold uppercase tracking-wide mt-1",
+                                    item.conjunto.includes('Integrado') ? "text-zinc-400" : "text-indigo-600"
+                                  )}>
+                                    {item.conjunto}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-6 py-4 text-right text-sm text-zinc-600">
+                                {item.quantidade} <span className="text-[10px] text-zinc-400">{item.unidade}</span>
+                              </td>
+                              <td className="px-6 py-4 text-right text-sm text-zinc-600">
+                                {formatCurrency(item.valorUnitario)}
+                              </td>
+                              <td className="px-6 py-4 text-right text-sm font-bold text-emerald-600 bg-emerald-50/30">
+                                {formatCurrency(calculateMarkupPrice(item.valorUnitario))}
+                              </td>
+                              <td className="px-6 py-4">
+                                <div className="flex items-center justify-center gap-3">
+                                  {(!item.conjunto || !item.conjunto.includes('Integrado')) && (
+                                    <button
+                                      onClick={() => openMerge(item)}
+                                      title="Unir em um conjunto"
+                                      className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-all"
+                                    >
+                                      <GitMerge className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  {/* Bulk Merge Suggestions */}
+                  {suggestedMerges.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="bg-indigo-600 rounded-2xl p-6 text-white shadow-xl shadow-indigo-100 space-y-4"
+                    >
+                      <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                        <div className="flex items-center gap-4">
+                          <div className="p-3 bg-white/20 rounded-xl">
+                            <GitMerge className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <h3 className="font-bold text-lg">Sugestões de Junção Encontradas</h3>
+                            <p className="text-indigo-100 text-sm">
+                              Identificamos {suggestedMerges.length} possíveis conjuntos baseados na semelhança dos nomes.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 w-full md:w-auto">
+                          <button
+                            onClick={() => setSuggestedMerges([])}
+                            className="flex-1 md:flex-none px-6 py-2.5 rounded-xl text-sm font-semibold text-white/80 hover:text-white hover:bg-white/10 transition-all"
+                          >
+                            Ignorar
+                          </button>
+                          <button
+                            onClick={confirmBulkMerge}
+                            disabled={selectedSuggestedMerges.length === 0}
+                            className="flex-1 md:flex-none px-8 py-2.5 bg-white text-indigo-600 rounded-xl text-sm font-bold hover:bg-indigo-50 transition-all shadow-lg disabled:opacity-50"
+                          >
+                            Confirmar Selecionadas ({selectedSuggestedMerges.length})
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-white/10">
+                        {suggestedMerges.map((merge, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => {
+                              setSelectedSuggestedMerges(prev =>
+                                prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]
+                              );
+                            }}
+                            className={cn(
+                              "relative text-left rounded-2xl p-5 transition-all border",
+                              selectedSuggestedMerges.includes(idx)
+                                ? "bg-white/20 border-white/30 shadow-inner"
+                                : "bg-white/5 border-transparent hover:bg-white/10"
+                            )}
+                          >
+                            <div className="absolute top-4 right-4">
+                              {selectedSuggestedMerges.includes(idx) ? (
+                                <CheckSquare className="w-5 h-5 text-white" />
+                              ) : (
+                                <Square className="w-5 h-5 text-white/30" />
+                              )}
+                            </div>
+                            <div className="text-xs font-bold text-indigo-200 uppercase tracking-widest mb-4 pr-8">
+                              Sugestão: {merge.suggestedName}
+                            </div>
+                            <div className="space-y-3">
+                              <div className="flex items-start gap-3">
+                                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-1.5 flex-shrink-0" />
+                                <div className="text-xs text-white/90 leading-relaxed">{merge.item1.descricao}</div>
+                              </div>
+                              <div className="flex items-start gap-3">
+                                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-1.5 flex-shrink-0" />
+                                <div className="text-xs text-white/90 leading-relaxed">{merge.item2.descricao}</div>
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </div>
+
+                <div className="space-y-6">
+                  <section className="bg-white rounded-2xl border border-zinc-200 p-6 shadow-sm">
+                    <h3 className="font-semibold mb-4 text-zinc-900">Resumo Financeiro</h3>
+                    <div className="space-y-3">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-zinc-500">Total de Produtos</span>
+                        <span className="font-medium">{formatCurrency(nfeData.total.valorProdutos)}</span>
+                      </div>
+                      <div className="pt-3 border-t border-zinc-100 flex justify-between items-end">
+                        <span className="text-sm font-semibold text-zinc-900 uppercase tracking-wider">Valor Total</span>
+                        <span className="text-2xl font-bold text-emerald-600">{formatCurrency(nfeData.total.valorNota)}</span>
+                      </div>
+                    </div>
+
+                    <label className="block text-xs font-bold text-zinc-400 uppercase tracking-widest mt-6 mb-2">
+                      Markup padrão (%)
+                    </label>
+                    <input
+                      type="number"
+                      value={markupInput}
+                      onChange={(e) => setMarkupInput(e.target.value)}
+                      className="w-full px-3 py-2 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+
+                    {error && (
+                      <div className="mt-4 p-3 bg-red-50 border border-red-100 rounded-xl flex items-center gap-2 text-red-600">
+                        <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                        <p className="text-xs font-medium">{error}</p>
+                      </div>
+                    )}
+
+                    <button
+                      onClick={() => setConfirmed(true)}
+                      disabled={confirmed}
+                      className={cn(
+                        "w-full mt-6 font-semibold py-3 rounded-xl transition-all flex items-center justify-center gap-2 group shadow-lg",
+                        confirmed
+                          ? "bg-emerald-100 text-emerald-700 shadow-emerald-50"
+                          : "bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-200"
+                      )}
+                    >
+                      {confirmed ? (
+                        <>
+                          <CheckCircle2 className="w-5 h-5" />
+                          Conjuntos Confirmados
+                        </>
+                      ) : (
+                        <>
+                          Confirmar Conjuntos
+                          <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                        </>
+                      )}
+                    </button>
+
+                    {confirmed && (
+                      <button
+                        onClick={exportJSON}
+                        className="w-full mt-3 font-semibold py-3 rounded-xl transition-all flex items-center justify-center gap-2 bg-zinc-900 hover:bg-zinc-800 text-white"
+                      >
+                        <Download className="w-4 h-4" />
+                        Baixar JSON
+                      </button>
+                    )}
+                  </section>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </main>
+
+      {/* Modal de junção manual */}
+      <AnimatePresence>
+        {mergeState.isOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setMergeState({ ...mergeState, isOpen: false })}
+              className="absolute inset-0 bg-zinc-900/60 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden"
+            >
+              <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-100">
+                <div>
+                  <h2 className="font-bold text-zinc-900">Montar Novo Conjunto</h2>
+                  <p className="text-xs text-zinc-500 mt-1">Combine dois itens para formar um novo conjunto</p>
+                </div>
+                <button
+                  onClick={() => setMergeState({ ...mergeState, isOpen: false })}
+                  className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="overflow-y-auto p-6 space-y-4">
+                {/* Primeiro produto */}
+                <div className="p-4 border border-emerald-200 bg-emerald-50/50 rounded-xl">
+                  <div className="text-[9px] font-mono font-bold text-emerald-600 uppercase tracking-wider mb-1">Item 1</div>
+                  <div className="font-semibold text-zinc-900 text-sm">{mergeState.firstItem?.descricao}</div>
+                  <div className="text-xs text-zinc-500 mt-1">Custo: {formatCurrency(mergeState.firstItem?.valorUnitario || 0)}</div>
+                </div>
+
+                {/* Segundo produto */}
+                <div className={cn(
+                  "p-4 border rounded-xl",
+                  mergeState.secondItem ? "border-emerald-200 bg-emerald-50/50" : "border-dashed border-zinc-200"
+                )}>
+                  {mergeState.secondItem ? (
+                    <>
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="text-[9px] font-mono font-bold text-emerald-600 uppercase tracking-wider mb-1">Item 2</div>
+                          <div className="font-semibold text-zinc-900 text-sm">{mergeState.secondItem.descricao}</div>
+                          <div className="text-xs text-zinc-500 mt-1">Custo: {formatCurrency(mergeState.secondItem.valorUnitario)}</div>
+                        </div>
+                        <button
+                          onClick={() => setMergeState({ ...mergeState, secondItem: null })}
+                          className="p-1 text-zinc-400 hover:text-red-500 transition-colors"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs text-zinc-400 mb-4">Selecione o segundo item abaixo</p>
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                        {nfeData?.itens
+                          .filter(i => i.item !== mergeState.firstItem?.item && !i.conjunto?.includes('Integrado'))
+                          .map(item => (
+                            <button
+                              key={item.item}
+                              onClick={() => {
+                                const suggested = suggestMergeName(mergeState.firstItem!.descricao, item.descricao);
+                                setMergeState({ ...mergeState, secondItem: item, newName: suggested });
+                              }}
+                              className="w-full text-left px-3 py-2 rounded-lg hover:bg-white text-xs text-zinc-700 transition-colors"
+                            >
+                              {item.descricao}
+                            </button>
+                          ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {mergeState.secondItem && (
+                  <div>
+                    <label className="block text-xs font-bold text-zinc-400 uppercase tracking-widest mb-2">Nome do Novo Conjunto</label>
+                    <input
+                      type="text"
+                      value={mergeState.newName}
+                      onChange={(e) => setMergeState({ ...mergeState, newName: e.target.value })}
+                      placeholder="Digite o nome para este conjunto..."
+                      className="w-full px-3 py-2 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                    <div className="flex justify-between items-center mt-3 px-1">
+                      <span className="text-xs text-zinc-500">Custo total do conjunto</span>
+                      <span className="text-sm font-bold text-zinc-900">
+                        {formatCurrency((mergeState.firstItem?.valorUnitario || 0) + (mergeState.secondItem?.valorUnitario || 0))}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-6 py-4 border-t border-zinc-100 flex gap-3">
+                <button
+                  onClick={() => setMergeState({ ...mergeState, isOpen: false })}
+                  className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold text-zinc-500 hover:bg-zinc-100 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={confirmMerge}
+                  disabled={!mergeState.newName || !mergeState.secondItem}
+                  className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold transition-all disabled:opacity-50"
+                >
+                  Criar Conjunto
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
