@@ -78,7 +78,9 @@ export default function App() {
   const suggestMergeName = (str1: string, str2: string) => {
     const suffix = getCommonSuffix(str1, str2);
     if (suffix.length > 3) {
-      return `CONJUNTO ${suffix}`;
+      // Quando uma das peças é uma calcinha, o conjunto resultante é um biquíni.
+      const isBiquini = /calcinha/i.test(str1) || /calcinha/i.test(str2);
+      return `${isBiquini ? 'BIQUÍNI' : 'CONJUNTO'} ${suffix}`;
     }
     return "";
   };
