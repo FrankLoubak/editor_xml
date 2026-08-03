@@ -9,7 +9,7 @@
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { XMLParser } from 'fast-xml-parser';
+import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import {
   Upload, AlertCircle, ChevronRight, Package,
   Building2, ReceiptText, GitMerge, CheckSquare, Square,
@@ -327,13 +327,47 @@ export default function App() {
     setMarkupInput("0");
   };
 
-  const exportJSON = () => {
+  const exportXML = () => {
     if (!nfeData) return;
-    const blob = new Blob([JSON.stringify(nfeData, null, 2)], { type: 'application/json' });
+
+    // Peças que foram absorvidas por um conjunto não entram no XML final —
+    // só o conjunto composto (ou o item original, se nunca foi unido).
+    const itensFinais = nfeData.itens.filter(i => !i.conjunto?.includes('Integrado'));
+
+    const builder = new XMLBuilder({ format: true, ignoreAttributes: false });
+    const xmlObj = {
+      nfe: {
+        numero: nfeData.numero,
+        serie: nfeData.serie,
+        dataEmissao: nfeData.dataEmissao,
+        naturezaOperacao: nfeData.naturezaOperacao,
+        emitente: nfeData.emitente,
+        destinatario: nfeData.destinatario,
+        itens: {
+          item: itensFinais.map(i => ({
+            numero: i.item,
+            codigo: i.codigo,
+            descricao: i.descricao,
+            ncm: i.ncm,
+            cfop: i.cfop,
+            unidade: i.unidade,
+            quantidade: i.quantidade,
+            valorUnitario: i.valorUnitario,
+            valorTotal: i.valorTotal,
+            codigoBarras: i.codigo_barras,
+            ...(i.conjunto ? { conjunto: i.conjunto } : {}),
+          })),
+        },
+        total: nfeData.total,
+      },
+    };
+
+    const xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n' + builder.build(xmlObj);
+    const blob = new Blob([xmlContent], { type: 'application/xml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `nfe-${nfeData.numero}-conjuntos.json`;
+    a.download = `nfe-${nfeData.numero}-conjuntos.xml`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -655,11 +689,11 @@ export default function App() {
 
                     {confirmed && (
                       <button
-                        onClick={exportJSON}
+                        onClick={exportXML}
                         className="w-full mt-3 font-semibold py-3 rounded-xl transition-all flex items-center justify-center gap-2 bg-zinc-900 hover:bg-zinc-800 text-white"
                       >
                         <Download className="w-4 h-4" />
-                        Baixar JSON
+                        Baixar XML
                       </button>
                     )}
                   </section>

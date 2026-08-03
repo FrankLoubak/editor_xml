@@ -18,7 +18,9 @@ Portado da funcionalidade de importação de XML do
 - Montagem manual de um novo conjunto, escolhendo dois itens e um nome.
 - Desfazer um conjunto já montado (automático ou manual), devolvendo os itens
   originais para a lista.
-- Confirmar os conjuntos montados e exportar o resultado final em JSON.
+- Confirmar os conjuntos montados e exportar o resultado final em XML. As
+  peças que foram absorvidas por um conjunto não entram no XML exportado —
+  só o conjunto composto (ou o item original, se nunca foi unido).
 
 ## Rodando localmente
 
