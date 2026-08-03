@@ -16,6 +16,8 @@ Portado da funcionalidade de importação de XML do
 - Sugestão automática de conjuntos com base na semelhança dos nomes dos itens,
   com opção de confirmar as sugestões selecionadas ou ignorá-las.
 - Montagem manual de um novo conjunto, escolhendo dois itens e um nome.
+- Desfazer um conjunto já montado (automático ou manual), devolvendo os itens
+  originais para a lista.
 - Confirmar os conjuntos montados e exportar o resultado final em JSON.
 
 ## Rodando localmente

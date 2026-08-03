@@ -13,7 +13,7 @@ import { XMLParser } from 'fast-xml-parser';
 import {
   Upload, AlertCircle, ChevronRight, Package,
   Building2, ReceiptText, GitMerge, CheckSquare, Square,
-  X, RotateCcw, Download, CheckCircle2,
+  X, RotateCcw, Download, CheckCircle2, Undo2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatCurrency } from './lib/utils';
@@ -156,6 +156,7 @@ export default function App() {
 
     setNfeData({ ...nfeData, itens: currentItens });
     setSuggestedMerges([]);
+    setConfirmed(false);
   };
 
   const confirmMerge = () => {
@@ -189,6 +190,27 @@ export default function App() {
 
     setNfeData({ ...nfeData, itens: [...updatedItens, newItem] });
     setMergeState({ isOpen: false, firstItem: null, secondItem: null, newName: "" });
+    setConfirmed(false);
+  };
+
+  // Desfaz um conjunto já montado (automático ou manual): remove o item
+  // CJ-composto e devolve os 2 itens originais para a lista, liberando-os
+  // para uma nova junção.
+  const undoMerge = (conjuntoItem: NFeItem) => {
+    if (!nfeData) return;
+
+    const updatedItens = nfeData.itens
+      .filter(i => i.item !== conjuntoItem.item)
+      .map(i => {
+        if (i.conjunto === `Integrado no conjunto: ${conjuntoItem.codigo}`) {
+          const { conjunto, ...rest } = i;
+          return rest;
+        }
+        return i;
+      });
+
+    setNfeData({ ...nfeData, itens: updatedItens });
+    setConfirmed(false);
   };
 
   const parseXML = (xmlText: string) => {
@@ -429,7 +451,10 @@ export default function App() {
                   <section className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden">
                     <div className="px-6 py-4 border-b border-zinc-100 flex items-center justify-between">
                       <h3 className="font-semibold text-zinc-900">Itens da Nota</h3>
-                      <p className="text-xs text-zinc-400">Clique em <GitMerge className="w-3 h-3 inline mx-0.5" /> para unir dois itens em um conjunto</p>
+                      <p className="text-xs text-zinc-400">
+                        Clique em <GitMerge className="w-3 h-3 inline mx-0.5" /> para unir dois itens em um conjunto,
+                        ou em <Undo2 className="w-3 h-3 inline mx-0.5" /> para desfazer um conjunto já montado
+                      </p>
                     </div>
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
@@ -475,6 +500,15 @@ export default function App() {
                                       className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-all"
                                     >
                                       <GitMerge className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                  {item.conjunto?.includes('Composto') && (
+                                    <button
+                                      onClick={() => undoMerge(item)}
+                                      title="Desfazer conjunto"
+                                      className="p-1.5 rounded-lg text-zinc-400 hover:bg-red-50 hover:text-red-600 transition-all"
+                                    >
+                                      <Undo2 className="w-4 h-4" />
                                     </button>
                                   )}
                                 </div>
