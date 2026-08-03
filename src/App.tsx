@@ -145,7 +145,12 @@ export default function App() {
     return t1 !== null && t1 === pieceType(str2);
   };
 
-  // Varre os itens ainda "livres" (não integrados a nenhum conjunto) em busca
+  // Uma peça continua disponível para novas junções enquanto ainda sobrar
+  // quantidade não usada — só fica indisponível quando todas as unidades já
+  // viraram conjunto (quantidadeUsada === quantidade).
+  const isDisponivel = (i: NFeItem) => (i.quantidadeUsada ?? 0) < i.quantidade;
+
+  // Varre os itens ainda disponíveis (com quantidade não usada) em busca
   // de pares com sufixo de nome em comum, sugerindo a junção automaticamente.
   useEffect(() => {
     if (!nfeData) {
@@ -156,7 +161,7 @@ export default function App() {
 
     const suggestions: { item1: NFeItem; item2: NFeItem; suggestedName: string }[] = [];
     const processed = new Set<number>();
-    const availableItems = nfeData.itens.filter(i => !i.conjunto?.includes('Integrado') && !i.conjunto?.includes('Composto'));
+    const availableItems = nfeData.itens.filter(i => isDisponivel(i) && !i.conjunto?.includes('Composto'));
 
     for (let i = 0; i < availableItems.length; i++) {
       if (processed.has(availableItems[i].item)) continue;
@@ -211,9 +216,11 @@ export default function App() {
         conjunto: `Composto por: ${item1.codigo} e ${item2.codigo}`,
       };
 
+      // Consome 1 unidade de cada peça original — ela continua disponível
+      // pra novas junções até a quantidade usada se igualar à inicial.
       currentItens = currentItens.map(i => {
-        if (i.item === item1.item) return { ...i, conjunto: `Integrado no conjunto: ${newItem.codigo}` };
-        if (i.item === item2.item) return { ...i, conjunto: `Integrado no conjunto: ${newItem.codigo}` };
+        if (i.item === item1.item) return { ...i, quantidadeUsada: (i.quantidadeUsada ?? 0) + 1 };
+        if (i.item === item2.item) return { ...i, quantidadeUsada: (i.quantidadeUsada ?? 0) + 1 };
         return i;
       });
 
@@ -250,7 +257,7 @@ export default function App() {
 
     const available = allItems.filter(i =>
       i.item !== first.item && i.item !== second.item &&
-      !i.conjunto?.includes('Integrado') && !i.conjunto?.includes('Composto')
+      isDisponivel(i) && !i.conjunto?.includes('Composto')
     );
 
     const pairs: { item1: NFeItem; item2: NFeItem; suggestedName: string }[] = [];
@@ -290,10 +297,11 @@ export default function App() {
       conjunto: `Composto por: ${first.codigo} e ${second.codigo}`,
     };
 
-    // Marca os originais como parte do conjunto
+    // Consome 1 unidade de cada peça original — ela continua disponível pra
+    // novas junções até a quantidade usada se igualar à inicial.
     const updatedItens = nfeData.itens.map(i => {
-      if (i.item === first.item) return { ...i, conjunto: `Integrado no conjunto: ${newItem.codigo}` };
-      if (i.item === second.item) return { ...i, conjunto: `Integrado no conjunto: ${newItem.codigo}` };
+      if (i.item === first.item) return { ...i, quantidadeUsada: (i.quantidadeUsada ?? 0) + 1 };
+      if (i.item === second.item) return { ...i, quantidadeUsada: (i.quantidadeUsada ?? 0) + 1 };
       return i;
     });
 
@@ -329,12 +337,19 @@ export default function App() {
   const undoMerge = (conjuntoItem: NFeItem) => {
     if (!nfeData) return;
 
+    // Extrai os códigos dos 2 componentes a partir do próprio conjunto
+    // ("Composto por: CODE1 e CODE2") — cada um pode ter sido usado em
+    // outras junções também, então só devolve 1 unidade (decrementa), não
+    // limpa tudo.
+    const match = conjuntoItem.conjunto?.match(/^Composto por: (.+) e (.+)$/);
+    if (!match) return;
+    const [, code1, code2] = match;
+
     const updatedItens = nfeData.itens
       .filter(i => i.item !== conjuntoItem.item)
       .map(i => {
-        if (i.conjunto === `Integrado no conjunto: ${conjuntoItem.codigo}`) {
-          const { conjunto, ...rest } = i;
-          return rest;
+        if (i.codigo === code1 || i.codigo === code2) {
+          return { ...i, quantidadeUsada: Math.max(0, (i.quantidadeUsada ?? 0) - 1) };
         }
         return i;
       });
@@ -487,15 +502,32 @@ export default function App() {
   const exportXML = () => {
     if (!nfeData || !rawNFe) return;
 
-    // Peças que foram absorvidas por um conjunto não entram no XML final —
-    // só o conjunto composto (ou o item original, se nunca foi unido).
-    const itensFinais = nfeData.itens.filter(i => !i.conjunto?.includes('Integrado'));
+    // Peças totalmente absorvidas por conjuntos (quantidadeUsada === quantidade)
+    // não entram no XML final — só o que ainda sobra sem uso, e os conjuntos
+    // compostos.
+    const itensFinais = nfeData.itens.filter(isDisponivel);
 
     const detFinal = itensFinais.map(item => {
       const original = rawDetByItem[item.item];
-      if (original) {
+      const usada = item.quantidadeUsada ?? 0;
+      if (original && usada === 0) {
         // Item nunca envolvido em junção: repassa o <det> original, sem perdas.
         return { ...original };
+      }
+      if (original && usada > 0) {
+        // Item parcialmente usado em conjunto(s): repassa o <det> original,
+        // mas com a quantidade/valor ajustados pro que ainda sobra.
+        const restante = item.quantidade - usada;
+        const valorUnit = item.valorUnitario;
+        return {
+          ...original,
+          prod: {
+            ...original.prod,
+            qCom: restante.toFixed(4),
+            vProd: (valorUnit * restante).toFixed(2),
+            qTrib: restante.toFixed(4),
+          },
+        };
       }
 
       // Conjunto composto: monta um <det> a partir dos dados calculados.
@@ -710,11 +742,17 @@ export default function App() {
                                 <div className="text-sm font-medium text-zinc-900">{item.descricao}</div>
                                 <div className="text-xs text-zinc-400 font-mono mt-0.5">{item.codigo}</div>
                                 {item.conjunto && (
+                                  <div className="text-[10px] font-semibold uppercase tracking-wide mt-1 text-indigo-600">
+                                    {item.conjunto}
+                                  </div>
+                                )}
+                                {!!item.quantidadeUsada && (
                                   <div className={cn(
                                     "text-[10px] font-semibold uppercase tracking-wide mt-1",
-                                    item.conjunto.includes('Integrado') ? "text-zinc-400" : "text-indigo-600"
+                                    isDisponivel(item) ? "text-amber-600" : "text-zinc-400"
                                   )}>
-                                    {item.conjunto}
+                                    {item.quantidadeUsada} de {item.quantidade}{' '}
+                                    {item.quantidadeUsada === 1 ? 'unidade usada' : 'unidades usadas'} em conjunto
                                   </div>
                                 )}
                               </td>
@@ -729,7 +767,7 @@ export default function App() {
                               </td>
                               <td className="px-6 py-4">
                                 <div className="flex items-center justify-center gap-3">
-                                  {(!item.conjunto || !item.conjunto.includes('Integrado')) && (
+                                  {isDisponivel(item) && (
                                     <button
                                       onClick={() => openMerge(item)}
                                       title="Unir em um conjunto"
@@ -1051,7 +1089,7 @@ export default function App() {
                         {nfeData?.itens
                           .filter(i =>
                             i.item !== mergeState.firstItem?.item &&
-                            !i.conjunto?.includes('Integrado') &&
+                            isDisponivel(i) &&
                             !sameType(mergeState.firstItem!.descricao, i.descricao)
                           )
                           .map(item => (
