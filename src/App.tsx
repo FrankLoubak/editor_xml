@@ -52,6 +52,14 @@ export default function App() {
     suggestedName: string;
   }[]>([]);
   const [selectedSuggestedMerges, setSelectedSuggestedMerges] = useState<number[]>([]);
+  // Sugestões de estender uma junção manual para outras variações de
+  // tamanho (P/M/G/GG/XG) das mesmas 2 peças.
+  const [sizeExtension, setSizeExtension] = useState<{
+    item1: NFeItem;
+    item2: NFeItem;
+    suggestedName: string;
+  }[] | null>(null);
+  const [selectedSizeExtension, setSelectedSizeExtension] = useState<number[]>([]);
   const [mergeState, setMergeState] = useState<{
     isOpen: boolean;
     firstItem: NFeItem | null;
@@ -100,18 +108,26 @@ export default function App() {
   // gerado já sem acentos para evitar o problema de vez.
   const removerAcentos = (str: string) => str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-  const suggestMergeName = (str1: string, str2: string) => {
+  // Monta o nome do conjunto/biquíni a partir de 2 descrições, sem o gate de
+  // "sufixo comum longo o bastante" — usado quando a correspondência entre
+  // as peças já foi validada por outro caminho (ex: mesma base + tamanho).
+  const buildMergedName = (str1: string, str2: string) => {
     const { exclusive1, exclusive2, suffix } = splitByCommonSuffix(str1, str2);
+    // Quando uma das peças é uma calcinha, o conjunto resultante é um biquíni.
+    const isBiquini = /calcinha/i.test(str1) || /calcinha/i.test(str2);
+    const tipo = isBiquini ? 'BIQUINI' : 'CONJUNTO';
+    // Nome: tipo, depois o que é exclusivo de cada peça (sem a palavra do
+    // tipo em si), depois o que é comum às duas.
+    const atributos1 = removerTipoPeca(exclusive1);
+    const atributos2 = removerTipoPeca(exclusive2);
+    const nome = [tipo, ...atributos1, ...atributos2, ...suffix].filter(Boolean).join(' ');
+    return removerAcentos(nome);
+  };
+
+  const suggestMergeName = (str1: string, str2: string) => {
+    const { suffix } = splitByCommonSuffix(str1, str2);
     if (suffix.join(' ').length > 3) {
-      // Quando uma das peças é uma calcinha, o conjunto resultante é um biquíni.
-      const isBiquini = /calcinha/i.test(str1) || /calcinha/i.test(str2);
-      const tipo = isBiquini ? 'BIQUINI' : 'CONJUNTO';
-      // Nome: tipo, depois o que é exclusivo de cada peça (sem a palavra do
-      // tipo em si), depois o que é comum às duas.
-      const atributos1 = removerTipoPeca(exclusive1);
-      const atributos2 = removerTipoPeca(exclusive2);
-      const nome = [tipo, ...atributos1, ...atributos2, ...suffix].filter(Boolean).join(' ');
-      return removerAcentos(nome);
+      return buildMergedName(str1, str2);
     }
     return "";
   };
@@ -167,15 +183,18 @@ export default function App() {
     return cost * (1 + markup / 100);
   };
 
-  const confirmBulkMerge = () => {
-    if (!nfeData || selectedSuggestedMerges.length === 0) return;
-
-    let currentItens = [...nfeData.itens];
+  // Aplica uma lista de pares (item1, item2, nome sugerido) sobre uma lista
+  // de itens: cria o conjunto composto e marca os 2 originais como
+  // integrados. Compartilhado entre a confirmação em lote das sugestões
+  // automáticas e a extensão de tamanhos após uma junção manual.
+  const applyMergePairs = (
+    pairs: { item1: NFeItem; item2: NFeItem; suggestedName: string }[],
+    baseItens: NFeItem[]
+  ): NFeItem[] => {
+    let currentItens = [...baseItens];
     let nextItemNumber = Math.max(...currentItens.map(i => i.item)) + 1;
 
-    selectedSuggestedMerges.forEach(idx => {
-      const merge = suggestedMerges[idx];
-      const { item1, item2, suggestedName } = merge;
+    pairs.forEach(({ item1, item2, suggestedName }) => {
       const totalCost = item1.valorUnitario + item2.valorUnitario;
 
       const newItem: NFeItem = {
@@ -201,9 +220,51 @@ export default function App() {
       currentItens.push(newItem);
     });
 
-    setNfeData({ ...nfeData, itens: currentItens });
+    return currentItens;
+  };
+
+  const confirmBulkMerge = () => {
+    if (!nfeData || selectedSuggestedMerges.length === 0) return;
+    const pairs = selectedSuggestedMerges.map(idx => suggestedMerges[idx]);
+    setNfeData({ ...nfeData, itens: applyMergePairs(pairs, nfeData.itens) });
     setSuggestedMerges([]);
     setConfirmed(false);
+  };
+
+  // Tamanhos reconhecidos para a extensão automática de junção manual.
+  const SIZE_TOKENS = ['P', 'M', 'G', 'GG', 'XG'];
+
+  // Depois de uma junção manual, verifica se as mesmas 2 peças existem em
+  // outras variações de tamanho (P/M/G/GG/XG) ainda não unidas, para
+  // sugerir estender a junção a elas também.
+  const findSizeVariations = (first: NFeItem, second: NFeItem, allItems: NFeItem[]) => {
+    const lastWord = (s: string) => s.trim().split(' ').pop() || '';
+    const stripLastWord = (s: string) => s.trim().split(' ').slice(0, -1).join(' ');
+
+    const sizeFirst = lastWord(first.descricao).toUpperCase();
+    const sizeSecond = lastWord(second.descricao).toUpperCase();
+    if (sizeFirst !== sizeSecond || !SIZE_TOKENS.includes(sizeFirst)) return [];
+
+    const baseFirst = stripLastWord(first.descricao);
+    const baseSecond = stripLastWord(second.descricao);
+
+    const available = allItems.filter(i =>
+      i.item !== first.item && i.item !== second.item &&
+      !i.conjunto?.includes('Integrado') && !i.conjunto?.includes('Composto')
+    );
+
+    const pairs: { item1: NFeItem; item2: NFeItem; suggestedName: string }[] = [];
+    for (const size of SIZE_TOKENS) {
+      if (size === sizeFirst) continue;
+      const candA = available.find(i => i.descricao.trim().toUpperCase() === `${baseFirst} ${size}`.toUpperCase());
+      const candB = available.find(i => i.descricao.trim().toUpperCase() === `${baseSecond} ${size}`.toUpperCase());
+      if (candA && candB) {
+        // Correspondência já validada pela base + tamanho — não precisa do
+        // gate de sufixo comum do suggestMergeName.
+        pairs.push({ item1: candA, item2: candB, suggestedName: buildMergedName(candA.descricao, candB.descricao) });
+      }
+    }
+    return pairs;
   };
 
   const confirmMerge = () => {
@@ -236,8 +297,29 @@ export default function App() {
       return i;
     });
 
+    // Antes de commitar, verifica se as mesmas 2 peças existem em outros
+    // tamanhos ainda disponíveis, pra sugerir estender a junção.
+    const extensions = findSizeVariations(first, second, nfeData.itens);
+
     setNfeData({ ...nfeData, itens: [...updatedItens, newItem] });
     setMergeState({ isOpen: false, firstItem: null, secondItem: null, newName: "" });
+    setConfirmed(false);
+
+    if (extensions.length > 0) {
+      setSizeExtension(extensions);
+      setSelectedSizeExtension(extensions.map((_, idx) => idx));
+    } else {
+      setSizeExtension(null);
+      setSelectedSizeExtension([]);
+    }
+  };
+
+  const confirmSizeExtension = () => {
+    if (!nfeData || !sizeExtension || selectedSizeExtension.length === 0) return;
+    const pairs = selectedSizeExtension.map(idx => sizeExtension[idx]);
+    setNfeData({ ...nfeData, itens: applyMergePairs(pairs, nfeData.itens) });
+    setSizeExtension(null);
+    setSelectedSizeExtension([]);
     setConfirmed(false);
   };
 
@@ -398,6 +480,8 @@ export default function App() {
     setError(null);
     setConfirmed(false);
     setMarkupInput("0");
+    setSizeExtension(null);
+    setSelectedSizeExtension([]);
   };
 
   const exportXML = () => {
@@ -742,6 +826,85 @@ export default function App() {
                               <div className="flex items-start gap-3">
                                 <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-1.5 flex-shrink-0" />
                                 <div className="text-xs text-white/90 leading-relaxed">{merge.item2.descricao}</div>
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {/* Size Extension Suggestions (after a manual merge) */}
+                  {sizeExtension && sizeExtension.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="bg-violet-600 rounded-2xl p-6 text-white shadow-xl shadow-violet-100 space-y-4"
+                    >
+                      <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                        <div className="flex items-center gap-4">
+                          <div className="p-3 bg-white/20 rounded-xl">
+                            <GitMerge className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <h3 className="font-bold text-lg">Estender Junção Manual a Outros Tamanhos</h3>
+                            <p className="text-violet-100 text-sm">
+                              As mesmas peças que você acabou de unir também existem em {sizeExtension.length}{' '}
+                              {sizeExtension.length === 1 ? 'outro tamanho' : 'outros tamanhos'}.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 w-full md:w-auto">
+                          <button
+                            onClick={() => { setSizeExtension(null); setSelectedSizeExtension([]); }}
+                            className="flex-1 md:flex-none px-6 py-2.5 rounded-xl text-sm font-semibold text-white/80 hover:text-white hover:bg-white/10 transition-all"
+                          >
+                            Ignorar
+                          </button>
+                          <button
+                            onClick={confirmSizeExtension}
+                            disabled={selectedSizeExtension.length === 0}
+                            className="flex-1 md:flex-none px-8 py-2.5 bg-white text-violet-600 rounded-xl text-sm font-bold hover:bg-violet-50 transition-all shadow-lg disabled:opacity-50"
+                          >
+                            Confirmar Selecionadas ({selectedSizeExtension.length})
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-white/10">
+                        {sizeExtension.map((pair, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => {
+                              setSelectedSizeExtension(prev =>
+                                prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]
+                              );
+                            }}
+                            className={cn(
+                              "relative text-left rounded-2xl p-5 transition-all border",
+                              selectedSizeExtension.includes(idx)
+                                ? "bg-white/20 border-white/30 shadow-inner"
+                                : "bg-white/5 border-transparent hover:bg-white/10"
+                            )}
+                          >
+                            <div className="absolute top-4 right-4">
+                              {selectedSizeExtension.includes(idx) ? (
+                                <CheckSquare className="w-5 h-5 text-white" />
+                              ) : (
+                                <Square className="w-5 h-5 text-white/30" />
+                              )}
+                            </div>
+                            <div className="text-xs font-bold text-violet-200 uppercase tracking-widest mb-4 pr-8">
+                              Sugestão: {pair.suggestedName}
+                            </div>
+                            <div className="space-y-3">
+                              <div className="flex items-start gap-3">
+                                <div className="w-1.5 h-1.5 rounded-full bg-violet-400 mt-1.5 flex-shrink-0" />
+                                <div className="text-xs text-white/90 leading-relaxed">{pair.item1.descricao}</div>
+                              </div>
+                              <div className="flex items-start gap-3">
+                                <div className="w-1.5 h-1.5 rounded-full bg-violet-400 mt-1.5 flex-shrink-0" />
+                                <div className="text-xs text-white/90 leading-relaxed">{pair.item2.descricao}</div>
                               </div>
                             </div>
                           </button>
