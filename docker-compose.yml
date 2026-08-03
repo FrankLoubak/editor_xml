@@ -1,0 +1,10 @@
+services:
+  web:
+    build: .
+    restart: always
+    ports:
+      - "8090:80"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
