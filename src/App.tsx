@@ -92,6 +92,19 @@ export default function App() {
     return "";
   };
 
+  // Classifica o "tipo" da peça pelo nome — duas peças do mesmo tipo (duas
+  // calcinhas, dois tops, etc.) nunca formam um conjunto entre si.
+  const pieceType = (descricao: string): string | null => {
+    if (/calcinha/i.test(descricao)) return 'calcinha';
+    if (/\btop\b/i.test(descricao) || /sut(i|ã)/i.test(descricao)) return 'top';
+    return null;
+  };
+
+  const sameType = (str1: string, str2: string) => {
+    const t1 = pieceType(str1);
+    return t1 !== null && t1 === pieceType(str2);
+  };
+
   // Varre os itens ainda "livres" (não integrados a nenhum conjunto) em busca
   // de pares com sufixo de nome em comum, sugerindo a junção automaticamente.
   useEffect(() => {
@@ -109,6 +122,7 @@ export default function App() {
       if (processed.has(availableItems[i].item)) continue;
       for (let j = i + 1; j < availableItems.length; j++) {
         if (processed.has(availableItems[j].item)) continue;
+        if (sameType(availableItems[i].descricao, availableItems[j].descricao)) continue;
 
         const suggestedName = suggestMergeName(availableItems[i].descricao, availableItems[j].descricao);
         if (suggestedName) {
@@ -170,6 +184,7 @@ export default function App() {
 
   const confirmMerge = () => {
     if (!nfeData || !mergeState.firstItem || !mergeState.secondItem || !mergeState.newName) return;
+    if (sameType(mergeState.firstItem.descricao, mergeState.secondItem.descricao)) return;
 
     const first = mergeState.firstItem;
     const second = mergeState.secondItem;
@@ -841,7 +856,11 @@ export default function App() {
                       <p className="text-xs text-zinc-400 mb-4">Selecione o segundo item abaixo</p>
                       <div className="space-y-1.5 max-h-48 overflow-y-auto">
                         {nfeData?.itens
-                          .filter(i => i.item !== mergeState.firstItem?.item && !i.conjunto?.includes('Integrado'))
+                          .filter(i =>
+                            i.item !== mergeState.firstItem?.item &&
+                            !i.conjunto?.includes('Integrado') &&
+                            !sameType(mergeState.firstItem!.descricao, i.descricao)
+                          )
                           .map(item => (
                             <button
                               key={item.item}
