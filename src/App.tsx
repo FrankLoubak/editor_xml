@@ -89,15 +89,22 @@ export default function App() {
     };
   };
 
+  // Palavras que indicam o tipo da peça (não o modelo/atributo dela) — não
+  // entram no nome sugerido do conjunto, só os atributos de cada peça.
+  const TIPO_PECA_RE = /^(calcinhas?|tops?|cal[çc]as?|shorts?)$/i;
+  const removerTipoPeca = (palavras: string[]) => palavras.filter(p => !TIPO_PECA_RE.test(p));
+
   const suggestMergeName = (str1: string, str2: string) => {
     const { exclusive1, exclusive2, suffix } = splitByCommonSuffix(str1, str2);
     if (suffix.join(' ').length > 3) {
       // Quando uma das peças é uma calcinha, o conjunto resultante é um biquíni.
       const isBiquini = /calcinha/i.test(str1) || /calcinha/i.test(str2);
       const tipo = isBiquini ? 'BIQUÍNI' : 'CONJUNTO';
-      // Nome: tipo, depois o que é exclusivo de cada peça, depois o que é
-      // comum às duas.
-      return [tipo, ...exclusive1, ...exclusive2, ...suffix].filter(Boolean).join(' ');
+      // Nome: tipo, depois o que é exclusivo de cada peça (sem a palavra do
+      // tipo em si), depois o que é comum às duas.
+      const atributos1 = removerTipoPeca(exclusive1);
+      const atributos2 = removerTipoPeca(exclusive2);
+      return [tipo, ...atributos1, ...atributos2, ...suffix].filter(Boolean).join(' ');
     }
     return "";
   };
