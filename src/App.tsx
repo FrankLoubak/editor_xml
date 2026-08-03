@@ -468,7 +468,10 @@ export default function App() {
     };
 
     const xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n' + builder.build(xmlObj);
-    const blob = new Blob([xmlContent], { type: 'application/xml' });
+    // BOM UTF-8 no início do arquivo: sem ele, programas que não respeitam o
+    // "encoding=UTF-8" da declaração (ex: no Windows) leem os bytes como
+    // Latin-1/ANSI e acentos viram lixo (ex: "Í" -> "Ã�").
+    const blob = new Blob(['\uFEFF' + xmlContent], { type: 'application/xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
