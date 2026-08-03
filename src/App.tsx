@@ -467,11 +467,17 @@ export default function App() {
       },
     };
 
-    const xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n' + builder.build(xmlObj);
-    // BOM UTF-8 no início do arquivo: sem ele, programas que não respeitam o
-    // "encoding=UTF-8" da declaração (ex: no Windows) leem os bytes como
-    // Latin-1/ANSI e acentos viram lixo (ex: "Í" -> "Ã�").
-    const blob = new Blob(['\uFEFF' + xmlContent], { type: 'application/xml;charset=utf-8' });
+    // ISO-8859-1 (Latin-1): sistemas Windows legados (ex: o ERP acessado via
+    // Remote Desktop) costumam ignorar a declaração de encoding e o BOM do
+    // UTF-8, e leem o arquivo sempre como ANSI/Latin-1 — por isso os bytes
+    // aqui já saem nesse charset, byte a byte, em vez de UTF-8.
+    const xmlContent = '<?xml version="1.0" encoding="ISO-8859-1"?>\n' + builder.build(xmlObj);
+    const latin1Bytes = new Uint8Array(xmlContent.length);
+    for (let i = 0; i < xmlContent.length; i++) {
+      const code = xmlContent.charCodeAt(i);
+      latin1Bytes[i] = code <= 0xFF ? code : 0x3F; // '?' para caracteres fora do Latin-1
+    }
+    const blob = new Blob([latin1Bytes], { type: 'application/xml;charset=ISO-8859-1' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
