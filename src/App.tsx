@@ -511,18 +511,23 @@ export default function App() {
       const original = rawDetByItem[item.item];
       const usada = item.quantidadeUsada ?? 0;
       if (original && usada === 0) {
-        // Item nunca envolvido em junção: repassa o <det> original, sem perdas.
-        return { ...original };
+        // Item nunca envolvido em junção: repassa o <det> original, sem
+        // perdas, exceto a descrição — sem acento (mesma regra oficial do
+        // Manual de Integração do Contribuinte da NF-e p/ campos
+        // alfanuméricos, que é o que sistemas como o do usuário exigem).
+        return { ...original, prod: { ...original.prod, xProd: removerAcentos(original.prod.xProd) } };
       }
       if (original && usada > 0) {
         // Item parcialmente usado em conjunto(s): repassa o <det> original,
-        // mas com a quantidade/valor ajustados pro que ainda sobra.
+        // mas com a quantidade/valor ajustados pro que ainda sobra, e a
+        // descrição sem acento (mesmo motivo acima).
         const restante = item.quantidade - usada;
         const valorUnit = item.valorUnitario;
         return {
           ...original,
           prod: {
             ...original.prod,
+            xProd: removerAcentos(original.prod.xProd),
             qCom: restante.toFixed(4),
             vProd: (valorUnit * restante).toFixed(2),
             qTrib: restante.toFixed(4),
