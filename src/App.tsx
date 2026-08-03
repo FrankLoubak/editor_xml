@@ -34,6 +34,13 @@ function Card({ icon, label, value, subValue }: { icon: React.ReactNode; label: 
 
 export default function App() {
   const [nfeData, setNfeData] = useState<NFeData | null>(null);
+  // Blocos do NF-e original que não aparecem na tela mas precisam ser
+  // repassados ao exportar (mesmo formato de XML de nota fiscal): cabeçalho
+  // completo (ide/emit/dest/total/transp/cobr/pag/infAdic/infRespTec) e os
+  // <det> originais, indexados pelo número do item, para reaproveitar sem
+  // perdas os itens que não entraram em nenhum conjunto.
+  const [rawNFe, setRawNFe] = useState<Record<string, any> | null>(null);
+  const [rawDetByItem, setRawDetByItem] = useState<Record<number, any>>({});
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [markupInput, setMarkupInput] = useState<string>("0");
@@ -220,6 +227,10 @@ export default function App() {
       const parser = new XMLParser({
         ignoreAttributes: false,
         attributeNamePrefix: "@_",
+        // Mantém valores como string (não converte "02552710000150" em
+        // número): senão zeros à esquerda de CNPJ/IE/códigos são perdidos
+        // quando o XML é reexportado.
+        parseTagValue: false,
       });
       const result = parser.parse(xmlText);
 
@@ -274,13 +285,32 @@ export default function App() {
         },
       };
 
+      const rawDetMap: Record<number, any> = {};
+      det.forEach((d: any) => { rawDetMap[parseInt(d["@_nItem"])] = d; });
+
       setNfeData(mappedData);
+      setRawNFe({
+        "@_versao": infNFe["@_versao"],
+        "@_Id": infNFe["@_Id"],
+        ide,
+        emit,
+        dest,
+        total: infNFe.total,
+        transp: infNFe.transp,
+        cobr: infNFe.cobr,
+        pag: infNFe.pag,
+        infAdic: infNFe.infAdic,
+        infRespTec: infNFe.infRespTec,
+      });
+      setRawDetByItem(rawDetMap);
       setError(null);
       setConfirmed(false);
     } catch (err) {
       console.error(err);
       setError("Erro ao processar o arquivo XML. Verifique se é um arquivo de NF-e válido.");
       setNfeData(null);
+      setRawNFe(null);
+      setRawDetByItem({});
     }
   };
 
@@ -324,43 +354,84 @@ export default function App() {
 
   const reset = () => {
     setNfeData(null);
+    setRawNFe(null);
+    setRawDetByItem({});
     setError(null);
     setConfirmed(false);
     setMarkupInput("0");
   };
 
   const exportXML = () => {
-    if (!nfeData) return;
+    if (!nfeData || !rawNFe) return;
 
     // Peças que foram absorvidas por um conjunto não entram no XML final —
     // só o conjunto composto (ou o item original, se nunca foi unido).
     const itensFinais = nfeData.itens.filter(i => !i.conjunto?.includes('Integrado'));
 
-    const builder = new XMLBuilder({ format: true, ignoreAttributes: false });
-    const xmlObj = {
-      nfe: {
-        numero: nfeData.numero,
-        serie: nfeData.serie,
-        dataEmissao: nfeData.dataEmissao,
-        naturezaOperacao: nfeData.naturezaOperacao,
-        emitente: nfeData.emitente,
-        destinatario: nfeData.destinatario,
-        itens: {
-          item: itensFinais.map(i => ({
-            numero: i.item,
-            codigo: i.codigo,
-            descricao: i.descricao,
-            ncm: i.ncm,
-            cfop: i.cfop,
-            unidade: i.unidade,
-            quantidade: i.quantidade,
-            valorUnitario: i.valorUnitario,
-            valorTotal: i.valorTotal,
-            codigoBarras: i.codigo_barras,
-            ...(i.conjunto ? { conjunto: i.conjunto } : {}),
-          })),
+    const detFinal = itensFinais.map(item => {
+      const original = rawDetByItem[item.item];
+      if (original) {
+        // Item nunca envolvido em junção: repassa o <det> original, sem perdas.
+        return { ...original };
+      }
+
+      // Conjunto composto: monta um <det> a partir dos dados calculados.
+      // O conjunto não existia no NF-e original, então não tem uma
+      // classificação fiscal própria — reaproveita o bloco <imposto> do
+      // primeiro componente como aproximação, só para manter o XML válido.
+      const match = item.conjunto?.match(/^Composto por: (.+) e (.+)$/);
+      const firstCode = match?.[1];
+      const firstComponentItem = nfeData.itens.find(i => i.codigo === firstCode);
+      const firstComponentDet = firstComponentItem ? rawDetByItem[firstComponentItem.item] : undefined;
+
+      return {
+        prod: {
+          cProd: item.codigo,
+          cEAN: "SEM GTIN",
+          xProd: item.descricao,
+          NCM: item.ncm,
+          CFOP: item.cfop,
+          uCom: item.unidade,
+          qCom: item.quantidade.toFixed(4),
+          vUnCom: item.valorUnitario.toFixed(10),
+          vProd: item.valorTotal.toFixed(2),
+          cEANTrib: "SEM GTIN",
+          uTrib: item.unidade,
+          qTrib: item.quantidade.toFixed(4),
+          vUnTrib: item.valorUnitario.toFixed(10),
+          indTot: "1",
         },
-        total: nfeData.total,
+        ...(firstComponentDet?.imposto ? { imposto: firstComponentDet.imposto } : {}),
+      };
+    });
+
+    // Renumera os <det> sequencialmente (1..N) — a numeração original fica
+    // com buracos depois que as peças absorvidas são removidas.
+    detFinal.forEach((d, idx) => { d["@_nItem"] = String(idx + 1); });
+
+    const infNFe: Record<string, any> = {
+      "@_versao": rawNFe["@_versao"],
+      "@_Id": rawNFe["@_Id"],
+      ide: rawNFe.ide,
+      emit: rawNFe.emit,
+      dest: rawNFe.dest,
+      det: detFinal,
+      total: rawNFe.total,
+    };
+    if (rawNFe.transp) infNFe.transp = rawNFe.transp;
+    if (rawNFe.cobr) infNFe.cobr = rawNFe.cobr;
+    if (rawNFe.pag) infNFe.pag = rawNFe.pag;
+    if (rawNFe.infAdic) infNFe.infAdic = rawNFe.infAdic;
+    if (rawNFe.infRespTec) infNFe.infRespTec = rawNFe.infRespTec;
+
+    // Sem <Signature>/<protNFe>: são amarrados criptograficamente ao
+    // conteúdo original e ficariam inválidos com os itens recombinados —
+    // incluí-los aqui passaria a impressão falsa de autorização da SEFAZ.
+    const builder = new XMLBuilder({ format: true, ignoreAttributes: false, attributeNamePrefix: "@_" });
+    const xmlObj = {
+      NFe: {
+        "@_xmlns": "http://www.portalfiscal.inf.br/nfe",
+        infNFe,
       },
     };
 
