@@ -68,7 +68,10 @@ export default function App() {
     setMergeState({ isOpen: true, firstItem: item, secondItem: null, newName: "" });
   };
 
-  const getCommonSuffix = (str1: string, str2: string) => {
+  // Separa os nomes em: parte exclusiva de cada peça (palavras que só
+  // aparecem numa ou noutra) e a parte comum (sufixo compartilhado pelas
+  // duas, geralmente cor/tamanho).
+  const splitByCommonSuffix = (str1: string, str2: string) => {
     const parts1 = str1.split(' ');
     const parts2 = str2.split(' ');
     const suffix: string[] = [];
@@ -79,15 +82,22 @@ export default function App() {
       i--;
       j--;
     }
-    return suffix.join(' ');
+    return {
+      exclusive1: parts1.slice(0, i + 1),
+      exclusive2: parts2.slice(0, j + 1),
+      suffix,
+    };
   };
 
   const suggestMergeName = (str1: string, str2: string) => {
-    const suffix = getCommonSuffix(str1, str2);
-    if (suffix.length > 3) {
+    const { exclusive1, exclusive2, suffix } = splitByCommonSuffix(str1, str2);
+    if (suffix.join(' ').length > 3) {
       // Quando uma das peças é uma calcinha, o conjunto resultante é um biquíni.
       const isBiquini = /calcinha/i.test(str1) || /calcinha/i.test(str2);
-      return `${isBiquini ? 'BIQUÍNI' : 'CONJUNTO'} ${suffix}`;
+      const tipo = isBiquini ? 'BIQUÍNI' : 'CONJUNTO';
+      // Nome: tipo, depois o que é exclusivo de cada peça, depois o que é
+      // comum às duas.
+      return [tipo, ...exclusive1, ...exclusive2, ...suffix].filter(Boolean).join(' ');
     }
     return "";
   };
